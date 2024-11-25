@@ -30,6 +30,7 @@ from .exceptions import DeviceException
 from .decorators import getsource
 import functools
 import re
+import threading
 
 
 class BASE_NATS_DEVICE:
@@ -49,14 +50,35 @@ class BASE_NATS_DEVICE:
         self.nc.connect()
         self.nc.subscribe(subject="mpy.repl.output", callback=self.callback)
         self.msg = []
+        self.state = True
+        self.thread = threading.Thread(target=self.waitdata)
+        self.thread.start()
+        self.lock = threading.Lock()
 
+    def waitdata(self):
+        while self.state:
+            self.nc.wait(count=1)
+            try:
+                self.lock.release()
+            except Exception:
+                pass
+
+    def __del__(self):
+        self.state = False
+        self.write(self._kbi)
+        self.thread.join()
+  
     def callback(self, msg):
+        # print("pay",msg.payload)
         self.msg.append(msg.payload)
 
     def read(self):
         if len(self.msg) == 0:
-            self.nc.wait(count=1)
-        return self.msg.pop(0)
+            self.lock.acquire()
+        if len(self.msg):
+            return self.msg.pop(0)
+        else:
+            return b''
 
     def write(self, data: bytes = b''):
         self.nc.publish(subject="mpy.repl.input", payload=data)
@@ -79,6 +101,7 @@ class BASE_NATS_DEVICE:
         self.response = ''
         self.output = None
         self.buff = b''
+        self.msg = []
         self.write(bytes(cmd+'\r', 'utf-8'))
         # time.sleep(0.2)
         # self.buff = self.serial.read_all()[self.bytes_sent+1:]
@@ -249,6 +272,7 @@ class NATS_DEVICE(BASE_NATS_DEVICE):
         self.output = None
         self.flush_conn()
         self.buff = b''
+        self.msg = []
         self.write(bytes(cmd+'\r', 'utf-8'))
         # time.sleep(0.2)
         # self.buff = self.serial.read_all()[self.bytes_sent+1:]
@@ -290,6 +314,7 @@ class NATS_DEVICE(BASE_NATS_DEVICE):
                 b'\r\n>>> ', b'').replace(b'>>> ', b'').decode()
         if self._traceback in self.buff:
             long_string = True
+        
         if long_string:
             self.response = self.buff.replace(b'\r', b'').replace(
                 b'\r\n>>> ', b'').replace(b'>>> ', b'').decode()
@@ -516,7 +541,10 @@ class NatsDevice(NATS_DEVICE):
         super().__init__(*args, **kargs)
 
     def code(self, func):
-        str_func = '\n'.join(getsource(func).split('\n')[1:])
+        # str_func = '\n'.join(getsource(func).split('\n')[1:])
+        source_lines = getsource(func).split('\n')[1:]
+        indent = len(source_lines[0]) - len(source_lines[0].lstrip())
+        str_func = '\n'.join([line[indent:] for line in source_lines if line.strip()])
         self.paste_buff(str_func)
         self.cmd('\x04', silent=True)
 
@@ -535,7 +563,10 @@ class NatsDevice(NATS_DEVICE):
         return wrapper_cmd
 
     def code_follow(self, func):
-        str_func = '\n'.join(getsource(func).split('\n')[1:])
+        # str_func = '\n'.join(getsource(func).split('\n')[1:])
+        source_lines = getsource(func).split('\n')[1:]
+        indent = len(source_lines[0]) - len(source_lines[0].lstrip())
+        str_func = '\n'.join([line[indent:] for line in source_lines if line.strip()])
         self.paste_buff(str_func)
         self.cmd('\x04', silent=True)
 
