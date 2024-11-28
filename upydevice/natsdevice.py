@@ -48,7 +48,8 @@ class BASE_NATS_DEVICE:
         self.prompt = b'>>> '
         self.nc = NATSClient(servers)
         self.nc.connect()
-        self.nc.subscribe(subject="mpy.repl.output", callback=self.callback)
+        self.nc.subscribe(subject="mpy.repl.output", callback=self.datacallback)
+        self.nc.subscribe(subject="mpy.repl.callback", callback=self.datacallback)
         self.msg = []
         self.state = True
         self.thread = threading.Thread(target=self.waitdata)
@@ -63,14 +64,26 @@ class BASE_NATS_DEVICE:
             except Exception:
                 pass
 
+    
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.__del__()
+
     def __del__(self):
         self.state = False
         self.write(self._kbi)
         self.thread.join()
   
+    def datacallback(self, msg):
+        if msg.subject == 'mpy.repl.output':
+            self.msg.append(msg.payload)
+        elif msg.subject == 'mpy.repl.callback':
+            self.callback(msg.payload)
+
     def callback(self, msg):
-        # print("pay",msg.payload)
-        self.msg.append(msg.payload)
+        pass
 
     def read(self):
         if len(self.msg) == 0:
@@ -221,24 +234,25 @@ class NATS_DEVICE(BASE_NATS_DEVICE):
             self.cmd(self._kbi+'\r', silent=True)
 
     def __repr__(self):
-        repr_cmd = "import sys;import os; from machine import unique_id; \
-        [os.uname().sysname, os.uname().release, os.uname().version, \
-        os.uname().machine, unique_id(), sys.implementation.name]"
-        (self.dev_platform, self._release,
-         self._version, self._machine, uuid, imp) = self.cmd(repr_cmd,
-                                                             silent=True,
-                                                             rtn_resp=True)
-        vals = hexlify(uuid).decode()
-        imp = imp[0].upper() + imp[1:]
-        imp = imp.replace('p', 'P')
-        self._mac = ':'.join([vals[i:i+2] for i in range(0, len(vals), 2)])
-        fw_str = '{} {}; {}'.format(imp, self._version, self._machine)
-        dev_str = '(MAC: {})'.format(self._mac)
+        # repr_cmd = "import sys;import os; from machine import unique_id; \
+        # [os.uname().sysname, os.uname().release, os.uname().version, \
+        # os.uname().machine, unique_id(), sys.implementation.name]"
+        # (self.dev_platform, self._release,
+        #  self._version, self._machine, uuid, imp) = self.cmd(repr_cmd,
+        #                                                      silent=True,
+        #                                                      rtn_resp=True)
+        # vals = hexlify(uuid).decode()
+        # imp = imp[0].upper() + imp[1:]
+        # imp = imp.replace('p', 'P')
+        # self._mac = ':'.join([vals[i:i+2] for i in range(0, len(vals), 2)])
+        # fw_str = '{} {}; {}'.format(imp, self._version, self._machine)
+        # dev_str = '(MAC: {})'.format(self._mac)
         # desc_str = '{}, Manufacturer: {}'.format(self.dev_description,
         #                                          self.manufacturer)
-        return (f'Servers @ {self.nc}, Type: {self.dev_platform}, '
-                f'Class: {self.dev_class}\n'
-                f'Firmware: {fw_str}\n{dev_str}')
+        return (f'Servers @ {self.nc}')
+                # , Type: {self.dev_platform}, '
+                # f'Class: {self.dev_class}\n'
+                # f'Firmware: {fw_str}\n{dev_str}')
 
     def flush_conn(self):
         flushed = 0
@@ -583,6 +597,14 @@ class NatsDevice(NATS_DEVICE):
             if self.output:
                 return self.output
         return wrapper_cmd
+    
+    def remotefun(self, func):
+        source_lines = getsource(func).split('\n')[1:]
+        indent = len(source_lines[0]) - len(source_lines[0].lstrip())
+        str_func = '\n'.join([line[indent:] for line in source_lines if line.strip()])
+        self.paste_buff(str_func)
+        self.cmd('\x04', silent=True)
+        return CustomFunction(func)
 
     def load(self, file):
         with open(file, 'r') as upy_file:
@@ -595,3 +617,14 @@ class NatsDevice(NATS_DEVICE):
             dev_traceback = re.search(r'\b(Traceback)\b', self.response)
             tr_index = dev_traceback.start()
             raise DeviceException(self.response[tr_index:])
+
+
+class CustomFunction:
+    def __init__(self, func):
+        self.func = func
+
+    def __call__(self, *args, **kwargs):
+        self.func(*args, **kwargs)
+
+    def __repr__(self):
+        return self.func.__name__
